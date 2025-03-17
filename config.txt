@@ -1,0 +1,3 @@
+host=wss://ferret.oreostack.uk/socket/client_source
+token=avLSwOg8nG60ABDIw1OVEysHjp0wXMqEPgTBaI45poKoWhHFI9
+src=C:\Onedrive Free Coding\VostokFerret
