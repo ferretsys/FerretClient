@@ -1,57 +1,74 @@
-import { readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
 import chokidar from "chokidar";
-import promptModule from "prompt-sync";
-import { exit } from "process";
 import { resolve, sep } from "path";
-const prompt = promptModule();
+import tk from "terminal-kit";
 
-function parseConfig(text) {
-    var entries = {};
-    var lines = text.split("\n");
-    for (var line of lines) {
-        if (line.trim() == "") continue;
-        var data = line.split("=");
-        entries[data[0]] = data[1].trim();
-    }
-    return entries;
-}
+var term = tk.terminal;
+term.clear();
 
-const config = parseConfig(readFileSync("./config.txt").toString());
+var ws;
+var watcher;
 
-console.log("Config:", config);
-
-for (var key in config) {
-    if (config[key] == "unset") {
-        console.log("Please enter config key for", key);
-        var result = prompt("");
-        if (result == null) {
-            exit(1);
-        }
-        config[key] = result;
-    }
-}
-
-var configWritten = "";
-for (var key in config) {
-    configWritten += key + "=" + config[key] + "\r\n";
-}
-writeFileSync("./config.txt", configWritten);
-
-const ws = new WebSocket(config.host, {
-    headers: {
-      cookie: "authToken=" + config.token + ";"
+term.on('key', function(name) {
+	if (name === 'CTRL_C') {
+        if (ws) ws.close()
+        if (watcher) watcher.close()
+        process.exit(0)
     }
 });
 
-var watcher = null;
+if (process.argv.length != 4) {
+    throw "Invalid argument count, did you copy paste the command off the ferret intstance correctly?";
+}
+
+var host = process.argv[2];
+var token = process.argv[3];
+var lastSourceFolder = existsSync("lastSourceFolder.txt") ? readFileSync("lastSourceFolder.txt").toString() : "";
+
+term.bold(true);
+term.white("Host ").green(host + "\n");
+term.white("Token ").green(token.substring(0, 5) + "*".repeat(token.length-5) + "\n");
+
+term.white("Filepath ")
+term.cyan()
+
+var fileSource;
+while (true) {
+    if (lastSourceFolder)
+        term.bold(false).gray(`(${lastSourceFolder})`).bold(false)
+    fileSource = await term.inputField().promise;
+    if (fileSource || lastSourceFolder) {
+        if (fileSource) {
+            lastSourceFolder = fileSource;
+        }
+        fileSource = lastSourceFolder;
+        break;
+    }
+}
+writeFileSync("lastSourceFolder.txt", fileSource);
+
+term.moveTo(0, 3);
+term.bold(true).white("Filepath ").green(fileSource + "  \n").bold(false);
+
+ws = new WebSocket(host + "/socket/client_source", {
+    headers: {
+      cookie: "authToken=" + token + ";"
+    }
+});
+
+ws.addEventListener("error", (error) => {
+    console.error(error);
+})
+
 ws.addEventListener("open", ()=> {
     console.log("Open, beginning file system watch");
     
-    watcher = chokidar.watch(config.src, {
-        ignored: [config.src + sep + '.git'],
+    watcher = chokidar.watch(fileSource, {
+        ignored: [fileSource + sep + '.git'],
         persistent: true,
         ignoreInitial: true,
     });
+
     watcher.on('all', (event, path) => {
         console.log("File system change (", event, path, "), triggering reload");
         ws.send(JSON.stringify({
@@ -60,11 +77,21 @@ ws.addEventListener("open", ()=> {
     });
 });
 
-var sourceFilePath = resolve(config.src);
+var sourceFilePath = resolve(fileSource);
+
+function logTermError(message) {
+    term.bold(true).red(message + "\n").bold(false);
+}
 
 ws.addEventListener("message", async (message)=>{
     var message = message.data;
-    console.log("Recived message:", message)
+
+    if (message.startsWith("Your id is ")) {
+        term.bold(true).white("Source Id ").cyan(message.substring("Your id is ".length) + "\n").bold(false);
+    } else {
+        console.log("Recived message:", message);
+    }
+
     try {
         var data = JSON.parse(message);
     } catch {
@@ -72,21 +99,37 @@ ws.addEventListener("message", async (message)=>{
     }
     if (data.type == "request") {
         console.log("Recived request for file", data.filename);
-        var targetPath = config.src + sep + data.filename;
+        var targetPath = fileSource + sep + data.filename;
         if (resolve(targetPath).startsWith(sourceFilePath)) {
+            if (existsSync(targetPath)) {
+                ws.send(JSON.stringify({
+                    type: "request_response",
+                    request_id: data.request_id,
+                    result: "success",
+                    response: readFileSync(targetPath).toString(),
+                }));
+            } else {
+                logTermError(`Recived request for missing file ${targetPath}`);
+                ws.send(JSON.stringify({
+                    type: "request_response",
+                    request_id: data.request_id,
+                    result: "error",
+                    response: `File '${targetPath}' doesen't exist!`,
+                }));
+            }
+        } else {
+            logTermError(`Recived request for out of bounds file ${targetPath}`);
             ws.send(JSON.stringify({
                 type: "request_response",
                 request_id: data.request_id,
-                response: readFileSync(targetPath).toString(),
+                result: "error",
+                response: `Invalid path '${targetPath}'`,
             }));
-        } else {
-            console.log("Recived out of bounds file requiest!", targetPath)
         }
     }
 });
 
 ws.addEventListener("close", ()=>{
     console.log("Connection to server closed");
-    if (watcher)
-        watcher.close()
+    if (watcher) watcher.close()
 });
