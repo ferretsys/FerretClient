@@ -6,13 +6,15 @@ import tk from "terminal-kit";
 var term = tk.terminal;
 term.clear();
 
-var ws;
-var watcher;
+var ws = null;
+var watcher = null;
+var heartbeatInterval = null;
 
 term.on('key', function(name) {
 	if (name === 'CTRL_C') {
-        if (ws) ws.close()
-        if (watcher) watcher.close()
+        if (ws) ws.close();
+        if (watcher) watcher.close();
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
         process.exit(0)
     }
 });
@@ -130,6 +132,15 @@ ws.addEventListener("message", async (message)=>{
 });
 
 ws.addEventListener("close", ()=>{
-    console.log("Connection to server closed");
+    term.bold(true).red("Connection to server closed").bold(false);
     if (watcher) watcher.close()
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
 });
+
+heartbeatInterval = setInterval(() => {
+    if (ws) {
+        ws.send(JSON.stringify({
+            type: "keep_alive_heartbeat"
+        }));
+    }
+}, 50000);
